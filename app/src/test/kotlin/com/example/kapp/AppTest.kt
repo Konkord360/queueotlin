@@ -3,6 +3,8 @@
  */
 package com.example.kapp
 
+import io.kotest.matchers.equals.shouldBeEqual
+import io.kotest.matchers.shouldBe
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -19,13 +21,14 @@ import java.net.Socket
 @kotlin.uuid.ExperimentalUuidApi
 class AppTest {
     @Test
-    fun `should send and receive message from the server after connection`() = runTest {
+    fun `client should receive message from the server that another client sent`() = runTest {
         val server = ServerSocket(9092)
         launch(Dispatchers.IO) {
             startServer(server)
         }
 
         // client simulation
+        
         Socket("localhost", 9092).use { socket -> 
             val input = BufferedReader(InputStreamReader(socket.getInputStream()))
             val output = BufferedWriter(OutputStreamWriter(socket.getOutputStream()))
@@ -35,11 +38,51 @@ class AppTest {
             output.write("WRITE|test-topic|Hello there!")
             output.newLine()
             output.flush()
-
-            val inputFromServer = input.readLine() ?: ""
-            println("Got $inputFromServer from the server")
         }
 
+        Socket("localhost", 9092).use { socket -> 
+            val input = BufferedReader(InputStreamReader(socket.getInputStream()))
+            val output = BufferedWriter(OutputStreamWriter(socket.getOutputStream()))
+
+            println("Test writing to the server")
+
+            output.write("POLL|test-topic|")
+            output.newLine()
+            output.flush()
+
+            val response = input.readLine().split("|")
+            response[0] shouldBe  "OK"
+            response[1] shouldBe  "Hello there!"
+        }
+
+        println("stopping server")
         stopServer(server)
     }
+
+    @Test
+    fun `server should responsd with no messages message after a long poll`() = runTest {
+        val server = ServerSocket(9092)
+        launch(Dispatchers.IO) {
+            startServer(server)
+        }
+
+        Socket("localhost", 9092).use { socket -> 
+            val input = BufferedReader(InputStreamReader(socket.getInputStream()))
+            val output = BufferedWriter(OutputStreamWriter(socket.getOutputStream()))
+
+            println("Test writing to the server")
+
+            output.write("POLL|test-topic|")
+            output.newLine()
+            output.flush()
+
+            val response = input.readLine().split("|")
+            response[0] shouldBe  "OK"
+            response[1] shouldBe  "NO_MESSAGES"
+        }
+        println("stopping server")
+        stopServer(server)
+    }
+    
+
 }

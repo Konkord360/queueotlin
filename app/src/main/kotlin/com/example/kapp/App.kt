@@ -2,6 +2,7 @@ package com.example.kapp
 
 import java.net.ServerSocket
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import sun.rmi.server.Dispatcher
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -22,18 +23,25 @@ var clients = listOf<Client>()
 data class Client(val connection: Socket, val groupID: String)
 
 @Volatile
-var topic = mapOf<String, Message>()
+var topic = mapOf<String, List<Message>>()
 
 enum class Intent(val intentStrign: String){
     POLL("POLL"),
     WRITE("WRITE")
 }
 
+//Message shouldn't be send to the producer - there should be a way of knowing who sent the message
+// (groupId?) 
 data class Message(val intent: Intent, val topic: String, val message: String)
 
 val server: ServerSocket = ServerSocket(9090)
 
-val messages = listOf<Message>()
+var messages = listOf<Message>()
+
+// does it even make sens to use one? potentially Causing a bottle neck at the point of sending messages
+// Multiple coroutines write to a channel and multiple receive from it - faster then checking wether list is appended
+// Still need an offset for a consumer for reconeccts 
+val messagesChannel = Channel<Message>(Channel.BUFFERED)
 
 @kotlin.uuid.ExperimentalUuidApi
 suspend fun main() {
@@ -61,14 +69,16 @@ suspend fun startServer(server: ServerSocket) = coroutineScope {
 fun stopServer(server: ServerSocket) {
     println("Stopping server...")
     server.close()
+    clients = listOf()
+    messages = listOf()
 }
 
+// TODO lets do the writing to topics and pollings topics first
 // FOR NOW message will be delivered in parts split by "|" sign 
 // | Intent (READ/WRITE) | TOPIC | Partition (FUTURE) | Message
-suspend fun handleConnection(connection: Socket) {
+suspend fun handleConnection(connection: Socket) = coroutineScope{
     connection.use { socket -> 
         val input = BufferedReader(InputStreamReader(socket.getInputStream()))
-        val output = BufferedWriter(OutputStreamWriter(socket.getOutputStream()))
 
         // we need to simultanously listen to sockets and write to them - without blocking eachoter 
         // Is it time for channels?
@@ -79,30 +89,56 @@ suspend fun handleConnection(connection: Socket) {
 
             if(message.intent == Intent.POLL) {
                 // client is polling a message from topic
-                handlePoll()
+                launch(Dispatchers.IO) {
+                    handlePoll(connection)
+                }
             } else { 
                 // client wants to write to the topic
-                handleWrite()
+                launch(Dispatchers.IO) {
+                    handleWrite(message)
+                    println("Finished hanling of user message")
+                }
             }
 
 
             // so we need to implement long polling - 
-            with(output) {
-                write("Hello")
-                newLine()
-                flush()
+            //with(output) {
+                //    write("Hello")
+                //    newLine()
+                //    flush()
+                //}
             }
-        }
         // while loop to read all messages until dissconnect / disconnection message
     }
 }
 
-fun handlePoll() {
-
+suspend fun handlePoll(connection: Socket) = coroutineScope {
+    println("Handling long poll from $connection")
+    with(BufferedWriter(OutputStreamWriter(connection.getOutputStream()))) {
+        try {
+            withTimeout(2000) { 
+                println("waiting for message on a channel")
+                val message = messagesChannel.receive()
+                println("Message on channerl received $message")
+                write("OK|${message.message}")
+                newLine()
+                flush()
+            }
+        } catch(e: TimeoutCancellationException){
+            println("No messages during the long poll")
+            write("OK|NO_MESSAGES")
+            newLine()
+            flush()
+        }
+    }
 }
 
-fun handleWrite() {
-
+suspend fun handleWrite(message: Message) {
+    println("Sending write to a channel")
+    messagesChannel.send(message)
+    messages = messages + message
+    println("Sent user message to a channel")
+    //messagesChannel.close()
 }
 
 fun parseMessage(msg: String) : Message {
