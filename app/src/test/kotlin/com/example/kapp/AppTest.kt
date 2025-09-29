@@ -40,6 +40,8 @@ class AppTest {
             output.flush()
         }
 
+        delay(1000)
+
         Socket("localhost", 9092).use { socket -> 
             val input = BufferedReader(InputStreamReader(socket.getInputStream()))
             val output = BufferedWriter(OutputStreamWriter(socket.getOutputStream()))
@@ -78,7 +80,7 @@ class AppTest {
 
             val response = input.readLine().split("|")
             response[0] shouldBe  "OK"
-            response[1] shouldBe  "NO_MESSAGES"
+            response[1] shouldBe  "TOPIC_DOES_NOT_EXIST"
         }
         println("stopping server")
         stopServer(server)

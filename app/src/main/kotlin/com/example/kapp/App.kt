@@ -22,8 +22,17 @@ var clients = listOf<Client>()
 
 data class Client(val connection: Socket, val groupID: String)
 
+// What about schema definition?
+// If schema is defined structually - JSON or AVRO - I dont need to treat it as an ojbect
+// Just validate that all fields defined as obligatory in schema are present in the message
+// Simple schema definition - Kafka doesn't do schema definition - this is additional feature
+// - that speaks more in favor of just a map of topics
+data class Topic(val name: String, val messages: List<Message>) //, val schema: String) // ??
+
+var topicsToChannels = mapOf<String, Channel<Message>>()
+
 @Volatile
-var topic = mapOf<String, List<Message>>()
+var topics = mapOf<String, List<String>>()
 
 enum class Intent(val intentStrign: String){
     POLL("POLL"),
@@ -71,6 +80,7 @@ fun stopServer(server: ServerSocket) {
     server.close()
     clients = listOf()
     messages = listOf()
+    topicsToChannels = mapOf()
 }
 
 // TODO lets do the writing to topics and pollings topics first
@@ -86,11 +96,12 @@ suspend fun handleConnection(connection: Socket) = coroutineScope{
             println("Server waiting for messages")
             val inputMessage = input.readLine() ?: break
             val message = parseMessage(inputMessage)
-
+            
+            // Additional message for topic creation / deletion?
             if(message.intent == Intent.POLL) {
                 // client is polling a message from topic
                 launch(Dispatchers.IO) {
-                    handlePoll(connection)
+                    handlePoll(connection, message.topic)
                 }
             } else { 
                 // client wants to write to the topic
@@ -112,17 +123,38 @@ suspend fun handleConnection(connection: Socket) = coroutineScope{
     }
 }
 
-suspend fun handlePoll(connection: Socket) = coroutineScope {
-    println("Handling long poll from $connection")
+// Channel for each topic?
+suspend fun handlePoll(connection: Socket, topic: String) = coroutineScope {
+    println("Handling long poll from $connection on $topic")
     with(BufferedWriter(OutputStreamWriter(connection.getOutputStream()))) {
         try {
             withTimeout(2000) { 
                 println("waiting for message on a channel")
-                val message = messagesChannel.receive()
-                println("Message on channerl received $message")
-                write("OK|${message.message}")
-                newLine()
-                flush()
+                // xdd topic validation
+                // Should be list of topics with messages that gets persisted periodically
+                // along with the hashMap of topics and channels
+                // Each topic should have its own channel(Maybe bad usage of the channels - will see)
+                if (topic in topicsToChannels.keys) {
+                    val message = topicsToChannels[topic]!!.receive()
+                    println("Message on channerl received $message")
+                    write("OK|${message.message}")
+                    newLine()
+                    flush()
+                } else {
+                    println("Topic does not exist")
+                    write("OK|TOPIC_DOES_NOT_EXIST")
+                    newLine()
+                    flush()
+
+                }
+
+               // val message = messagesChannel.receive()
+               // if (message.topic == topic){
+               //     println("Message on channerl received $message")
+               //     write("OK|${message.message}")
+               //     newLine()
+               //     flush()
+               // }
             }
         } catch(e: TimeoutCancellationException){
             println("No messages during the long poll")
@@ -135,7 +167,17 @@ suspend fun handlePoll(connection: Socket) = coroutineScope {
 
 suspend fun handleWrite(message: Message) {
     println("Sending write to a channel")
-    messagesChannel.send(message)
+    if (!(message.topic in topics.keys)) {
+        println("Message sent to not existing topic")
+        println("Creating new topic: ${message.topic}")
+        // probably can be just one data structure
+        topics = topics + (message.topic to listOf(message.message))
+        val topicChannel = Channel<Message>(Channel.BUFFERED)
+        topicsToChannels = topicsToChannels + (message.topic to topicChannel)
+        topicChannel.send(message)
+        println("Current list of topics: $topics")
+    }
+    //messagesChannel.send(message)
     messages = messages + message
     println("Sent user message to a channel")
     //messagesChannel.close()
